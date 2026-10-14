@@ -1,86 +1,118 @@
-# Clinic OS — AI-Powered WhatsApp Booking Backend
+# Clinic OS — Dedicated AI-Powered WhatsApp Booking & Clinic Engine
 
-Clinic OS is a production-grade backend for dental clinic management and conversational appointment booking in India. It bridges **Meta WhatsApp Cloud API**, **Google Gemini AI**, and **Google Calendar** with an explicit state machine, multi-tenant isolation, atomic slot reservations, and compensation mechanics.
+**Clinic OS** is a dedicated, production-ready backend engine built specifically for private dental clinics. It connects **Meta WhatsApp Cloud API**, **Conversational AI** (OpenRouter / Google Gemini), and **Google Calendar** to deliver a seamless, automated patient booking experience.
+
+Unlike generic multi-tenant SaaS platforms, this system is architected as a **dedicated deployment for a specific clinic**, offering deep customization, direct calendar synchronization, zero multi-tenant overhead, and strict data privacy.
 
 ---
 
-## Architecture Overview
+## 🌟 Key Features
+
+### 1. Conversational AI Chatbot & WhatsApp Interactive Buttons
+* **Natural Dialogue**: Understands informal greetings, common queries, and typos (e.g. typing `6;30`, `6.30`, or `6:30 pm` accurately maps to 06:30 PM).
+* **Comprehensive Schedule Display**: Displays open clinic slots organized by time of day:
+  * 🌅 **Morning** (e.g. 09:00 AM, 09:30 AM, 10:00 AM, 11:30 AM)
+  * ☀️ **Afternoon** (e.g. 01:00 PM, 02:30 PM, 03:00 PM, 04:30 PM)
+  * 🌆 **Evening** (e.g. 05:00 PM, 06:00 PM, 06:30 PM)
+* **Interactive Quick Replies**: Sends Meta WhatsApp interactive buttons while allowing patients to tap or type any open slot.
+* **Flexible Confirmation**: Allows patients to switch slots or ask about other dates during the confirmation step without getting trapped in rigid loops.
+
+### 2. Live Google Calendar Synchronization
+* **Calendar as Scheduling Truth**: Slots are generated dynamically from clinic operating hours minus booked database appointments and live Google Calendar busy intervals in `Asia/Kolkata`.
+* **Automatic Patient Calendar Invites**: When an appointment is confirmed, the patient's email is added as an attendee (`sendUpdates="all"`), automatically adding the event to the patient's personal Google Calendar.
+* **Rescheduling & Cancellation in Sync**: Rescheduling updates the calendar event in real time. Cancellations immediately release the slot on Google Calendar.
+* **Automatic Lifecycle Signals & Reconciliation**: A Django `post_delete` signal removes events if an appointment is deleted. A built-in `py manage.py sync_calendar` command audits and cleans orphaned events.
+
+### 3. Concurrency Protection & Zero Double-Booking
+* **Atomic Reservations (`BookingReservation`)**: Slots are locked with a 10-minute TTL in an atomic PostgreSQL transaction before calling external APIs.
+* **Two-Phase Commit & Compensation**: If external calendar calls fail, the temporary database reservation is rolled back automatically.
+
+### 4. Docker & Production Ready
+* **Docker Container**: Multi-stage `Dockerfile` running Python 3.11 with an unprivileged non-root user and Gunicorn WSGI.
+* **Docker Compose**: Pre-configured `docker-compose.yml` for running the backend and an optional local PostgreSQL database.
+
+---
+
+## 🏗️ Architecture
 
 ```mermaid
 flowchart TD
     Patient([WhatsApp Patient]) <--> Meta[Meta WhatsApp Cloud API]
     Meta <--> Webhook[Django Webhook /api/v1/whatsapp/webhook/]
-    Webhook --> Parser[Webhook Parser & Deduplicator]
-    Parser --> Orchestrator[Conversation State Machine]
-    Orchestrator <--> Gemini[Google Gemini GenAI SDK / Fallback]
+    Webhook --> Deduplicator[Message Deduplicator & Audit Log]
+    Deduplicator --> Orchestrator[Conversation State Machine]
+    Orchestrator <--> AI[AI Assistant Engine\nOpenRouter / Gemini / Offline]
     Orchestrator <--> BookingSvc[Booking Domain Service]
-    BookingSvc <--> DB[(PostgreSQL / Clinic OS DB)]
-    BookingSvc <--> GCal[Google Calendar API]
+    BookingSvc <--> DB[(PostgreSQL Database)]
+    BookingSvc <--> GCal[Clinic Google Calendar & Patient Invites]
     Staff([Clinic Staff]) <--> StaffAPI[REST APIs /api/v1/appointments/]
     StaffAPI --> DB
 ```
 
-### Core Design Principles
-1. **AI as an Interpreter, Not Authority**: Google Gemini interprets natural language intent, extracts parameters, and formulates suggested replies. It is **never** permitted to invent slots, modify databases, or finalize bookings.
-2. **Calendar-Truth Scheduling**: All available slots are strictly calculated using clinic operating hours, existing DB appointments/reservations, buffer times, minimum notice, and Google Calendar FreeBusy intervals in the `Asia/Kolkata` timezone.
-3. **Double-Booking Prevention**: Slots are protected via atomic `BookingReservation` records, database transactions, and calendar API reconciliation. If an external calendar call fails, compensation logic rolls back the reservation and prevents ghost events.
-4. **Clinic Multi-Tenant Isolation**: Clinic staff belong to specific clinics via `ClinicMembership`. Access controls ensure clinic users cannot access patient data or appointments belonging to other clinics.
-5. **Idempotency**: Webhook deliveries are deduplicated using Meta's `external_message_id`, preventing duplicate replies or appointments.
+---
+
+## 🛠️ Tech Stack
+
+- **Framework**: Django 5.2, Django REST Framework
+- **Language**: Python 3.10+ / 3.11
+- **Database**: PostgreSQL (psycopg 3) / SQLite (offline tests)
+- **Messaging**: Meta WhatsApp Cloud API (Graph API v21.0)
+- **AI / LLM**: OpenRouter API (`google/gemma-4-31b-it:free`, `nvidia/nemotron`) & Google Gemini API (`google-genai` SDK)
+- **Calendar**: Google Calendar API (`google-api-python-client` with OAuth 2.0)
+- **WSGI Server**: Gunicorn
+- **Containerization**: Docker & Docker Compose
+- **Testing**: `pytest`, `pytest-django` (41 automated tests)
 
 ---
 
-## Tech Stack
-- **Python**: 3.10+
-- **Django**: 5.2+
-- **Django REST Framework**: 3.18+
-- **PostgreSQL / SQLite**: psycopg 3 (PostgreSQL in production, SQLite fallback for local test/dev)
-- **Meta WhatsApp Cloud API**: Graph API v21.0
-- **Google Gemini API**: Official `google-genai` Python SDK
-- **Google Calendar API**: `google-api-python-client` with OAuth 2.0
-- **Testing**: `pytest`, `pytest-django`
+## 📁 Project Structure
 
----
-
-## Directory Structure
-```
+```text
 backend/
 ├── apps/
-│   ├── accounts/              # User and staff authentication
-│   ├── clinics/               # Clinic configuration, hours & memberships
-│   ├── patients/              # Patient records, WhatsApp identifiers & consent
-│   ├── appointments/          # Appointments, BookingReservation model & REST views
-│   ├── conversations/         # State machine, conversation context & message logs
+│   ├── clinics/               # Clinic configuration, hours (Mon-Sat 9 AM - 7 PM), timezone
+│   ├── patients/              # Patient records, WhatsApp identifiers, contact details
+│   ├── appointments/          # Appointments, BookingReservation, signals, sync command
+│   │   └── management/commands/sync_calendar.py  # DB <-> Google Calendar sync command
+│   ├── conversations/         # Orchestrator state machine, conversation context, message logs
 │   ├── integrations/
-│   │   ├── whatsapp/          # Webhook verification, signature security & Graph API client
-│   │   └── google_calendar/   # Google OAuth, FreeBusy calculation & event management
-│   ├── ai_assistant/          # Gemini adapter, structured schemas & mock fallback
-│   ├── consultations/         # Clinical consultations (pre-existing starter app)
+│   │   ├── whatsapp/          # Webhook security (SHA256 HMAC), parser, interactive buttons client
+│   │   └── google_calendar/   # Google OAuth 2.0 service, attendee sync, FreeBusy engine
+│   ├── ai_assistant/          # Dual AI engine: OpenRouter + Gemini + offline fallback
+│   ├── accounts/              # Clinic staff accounts
+│   ├── consultations/         # Clinical records
 │   └── audit/                 # Security audit event logging
 ├── services/
-│   └── booking_service.py     # Domain service for reservations, calendar sync & transactions
-├── tests/                     # 33 comprehensive automated tests
-├── config/                    # Django settings, root URLs, WSGI/ASGI
-├── .env.example
-├── manage.py
-├── pytest.ini
-└── requirements.txt
+│   └── booking_service.py     # Pure domain service coordinating transactions, reservations & sync
+├── tests/                     # 41 comprehensive tests (100% offline with mocks)
+├── config/                    # Django settings, URLs, WSGI, ASGI
+├── Dockerfile                 # Production Docker image with non-root security
+├── docker-compose.yml         # Container orchestration
+├── .dockerignore              # Docker build exclusions
+├── .gitignore                 # Comprehensive git exclusions protecting secrets
+├── .env.example               # Safe environment template
+├── requirements.txt           # Python dependencies
+└── manage.py
 ```
 
 ---
 
-## Getting Started Locally
+## 🚀 Getting Started
 
-### 1. Clone & Set Up Virtual Environment
+### 1. Clone & Set Up Environment
 ```bash
-git clone <repo-url>
-cd clinic-os-starter/backend
+git clone https://github.com/Abhijagtp/clinicos-.git
+cd clinicos-/backend
 
+# Create virtual environment
 python -m venv venv
-# Windows:
+
+# Activate (Windows)
 venv\Scripts\activate
-# Linux/macOS:
+# Activate (Linux/macOS)
 source venv/bin/activate
 
+# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -90,34 +122,42 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-Key environment settings:
-- For rapid local development without a running PostgreSQL server, set:
-  ```env
-  USE_SQLITE=True
-  ```
-- To connect to local PostgreSQL:
-  ```env
-  USE_SQLITE=False
-  DATABASE_ENGINE=django.db.backends.postgresql
-  DATABASE_NAME=clinic_os
-  DATABASE_USER=clinic_os
-  DATABASE_PASSWORD=your_password
-  DATABASE_HOST=127.0.0.1
-  DATABASE_PORT=5432
-  ```
+Configure your credentials in `.env`:
+```env
+DJANGO_SECRET_KEY=your-secret-key
+DJANGO_DEBUG=True
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost,*
+DATABASE_URL=postgresql://user:password@host/neondb?sslmode=require
 
-### 3. Run Migrations & System Check
+# WhatsApp Cloud API
+WHATSAPP_ACCESS_TOKEN=your_meta_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_id
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+WHATSAPP_APP_SECRET=your_app_secret
+
+# AI Providers
+OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=google/gemma-4-31b-it:free
+GEMINI_API_KEY=your_gemini_key
+
+# Google Calendar
+GOOGLE_CALENDAR_ID=your_calendar_id@group.calendar.google.com
+GOOGLE_CLIENT_ID=your_oauth_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_oauth_client_secret
+GOOGLE_REFRESH_TOKEN=your_oauth_refresh_token
+CLINIC_TIMEZONE=Asia/Kolkata
+```
+
+### 3. Run Database Migrations
 ```bash
-python manage.py makemigrations
 python manage.py migrate
-python manage.py check
 ```
 
 ### 4. Run Automated Tests
 ```bash
 pytest
 ```
-*All 33 automated tests run 100% offline using simulated mock adapters without requiring live paid credentials.*
+*All 41 tests execute 100% offline using mock adapters without consuming live API tokens.*
 
 ### 5. Start Development Server
 ```bash
@@ -126,108 +166,44 @@ python manage.py runserver 0.0.0.0:8000
 
 ---
 
-## Meta WhatsApp Cloud API Setup
+## 🐳 Docker Deployment
 
-1. **Create Meta Developer App**:
-   - Go to [developers.facebook.com](https://developers.facebook.com/) and create a **Business** App.
-   - Add the **WhatsApp** product.
-2. **Retrieve API Credentials**:
-   - Obtain your **Phone Number ID** and **Temporary/Permanent Access Token**.
-   - Copy your **App Secret** from App Settings > Basic.
-3. **Configure Webhook**:
-   - In your WhatsApp App Dashboard > Configuration > Webhook:
-     - Callback URL: `https://<your-public-domain>/api/v1/whatsapp/webhook/` (use ngrok for local development).
-     - Verify Token: Matches `WHATSAPP_VERIFY_TOKEN` in your `.env`.
-   - Subscribe to the **`messages`** webhook field.
-4. **Set `.env` variables**:
-   ```env
-   WHATSAPP_ACCESS_TOKEN=your_token
-   WHATSAPP_PHONE_NUMBER_ID=your_phone_id
-   WHATSAPP_VERIFY_TOKEN=clinic_os_verify_token_secure
-   WHATSAPP_APP_SECRET=your_app_secret
-   WHATSAPP_API_VERSION=v21.0
-   ```
+### Run with Docker Compose
+```bash
+# Build and launch containers
+docker compose up -d --build
 
----
+# View container logs
+docker compose logs -f backend
 
-## Google Gemini API Setup
+# Stop containers
+docker compose down
+```
 
-1. Go to [Google AI Studio](https://aistudio.google.com/) and generate an API key.
-2. In `.env`:
-   ```env
-   GEMINI_API_KEY=AIzaSy...
-   GEMINI_MODEL=gemini-2.5-flash
-   ```
-3. *Note*: If `GEMINI_API_KEY` is empty or starts with `mock_`, the system automatically activates the offline `MockAIAssistant`, enabling development and tests without API fees or internet access.
-
----
-
-## Google Calendar API Setup
-
-1. In the [Google Cloud Console](https://console.cloud.google.com/):
-   - Enable the **Google Calendar API**.
-   - Create an **OAuth 2.0 Client ID** (Web application).
-   - Add Authorized Redirect URI:
-     `https://<your-domain>/api/v1/integrations/google-calendar/callback/`
-2. Update `.env`:
-   ```env
-   GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
-   GOOGLE_CLIENT_SECRET=your_client_secret
-   GOOGLE_CALENDAR_ID=primary
-   CLINIC_TIMEZONE=Asia/Kolkata
-   ```
-3. Connect Calendar for a Clinic:
-   - Make an authenticated GET request to `/api/v1/integrations/google-calendar/connect/?clinic_id=<uuid>`.
-   - Open the returned `authorization_url` to approve access.
-   - The callback securely exchanges the code and stores the refresh token in `GoogleCalendarConfig`.
-
----
-
-## Conversation State Machine
-
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> IDENTIFYING_INTENT : Inbound Message
-    IDENTIFYING_INTENT --> COLLECTING_DETAILS : Needs Date/Time
-    COLLECTING_DETAILS --> OFFERING_SLOTS : Slots Available
-    OFFERING_SLOTS --> AWAITING_CONFIRMATION : Patient Picks Slot
-    AWAITING_CONFIRMATION --> BOOKING_IN_PROGRESS : Explicit "Yes/Confirm"
-    BOOKING_IN_PROGRESS --> BOOKED : Success
-    BOOKED --> IDLE : WhatsApp Confirmation Sent
-    AWAITING_CONFIRMATION --> OFFERING_SLOTS : Slot Conflict / Re-offer
-    IDLE --> CANCELLING : Cancel Request
-    CANCELLING --> IDLE : Cancellation Confirmed
-    IDLE --> RESCHEDULING : Reschedule Request
-    RESCHEDULING --> OFFERING_SLOTS : New Slots Offered
-    IDLE --> HUMAN_HANDOFF : Emergency / Human Help
+### Build and Run Docker Container Directly
+```bash
+docker build -t clinic-os-backend .
+docker run -d -p 8000:8000 --env-file .env --name clinic_os clinic-os-backend
 ```
 
 ---
 
-## API Endpoints Reference
+## 🔄 Google Calendar Reconciliation Command
 
-| Endpoint | Method | Auth | Description |
-|---|---|---|---|
-| `/api/v1/health/` | GET | Public | Health check |
-| `/api/v1/whatsapp/webhook/` | GET | Public | Meta webhook verification handshake |
-| `/api/v1/whatsapp/webhook/` | POST | Public (HMAC Verified) | Incoming messages & status processing |
-| `/api/v1/integrations/google-calendar/connect/` | GET | Staff Auth | Generate Google OAuth consent URL |
-| `/api/v1/integrations/google-calendar/callback/` | GET | Public | Google OAuth callback handler |
-| `/api/v1/appointments/` | GET | Staff Auth | List clinic appointments (tenant isolated) |
-| `/api/v1/appointments/` | POST | Staff Auth | Create appointment via domain service |
-| `/api/v1/appointments/availability/` | GET | Public | Get real available slots for clinic & date |
-| `/api/v1/appointments/<id>/reschedule/` | POST | Staff Auth | Reschedule existing appointment |
-| `/api/v1/appointments/<id>/cancel/` | POST | Staff Auth | Cancel appointment & sync external calendar |
+To audit and synchronize Google Calendar with your PostgreSQL database:
+
+```bash
+# Reconcile and purge any orphaned calendar events
+python manage.py sync_calendar
+
+# Dry-run preview without making changes
+python manage.py sync_calendar --dry-run
+```
 
 ---
 
-## Security, Privacy & Indian DPDP Act Compliance
+## 🔒 Security & Best Practices
 
-1. **Digital Personal Data Protection Act (DPDP), 2023 Guidelines**:
-   - **Data Minimization**: Only contact identifier and voluntary patient names are captured during booking. Full AI prompts and clinical dialogues are not logged.
-   - **Consent Mechanism**: Patient WhatsApp interaction explicitly implies and records consent for appointment notifications (`consent_status=True`).
-   - **Purpose Limitation**: Patient phone numbers are used solely for appointment scheduling, rescheduling, and confirmations.
-   - **Right to Erasure & Access**: Staff APIs provide access to appointment records; patient cancellation fully removes pending reservations.
-2. **HMAC-SHA256 Signature Verification**: All webhook requests from Meta are validated against `X-Hub-Signature-256` using the clinic's `WHATSAPP_APP_SECRET`.
-3. **Medical Emergency Safeguards**: Clinical diagnosis or triage is strictly prohibited. High-acuity symptoms immediately trigger human escalation and direct patients to emergency care.
+- **Zero Secret Commits**: Sensitive credentials (`.env`, `credentials*.json`, `*.pem`, `*.key`) are excluded by `.gitignore` and `.dockerignore`.
+- **HMAC Verification**: Every inbound Meta webhook payload is validated using SHA256 HMAC against `WHATSAPP_APP_SECRET`.
+- **Clinical Safety Rules**: Built-in guardrails prevent medical diagnosis, strictly routing emergency cases to human clinic reception.
