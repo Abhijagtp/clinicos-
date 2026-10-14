@@ -1,0 +1,16 @@
+Django>=5.2,<5.3
+djangorestframework>=3.16,<3.19
+djangorestframework-simplejwt>=5.5,<6.0
+django-cors-headers>=4.7,<5.0
+psycopg[binary]>=3.2,<4.0
+dj-database-url>=3.0.0
+python-dotenv>=1.1,<2.0
+google-genai>=2.0.0
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.2.0
+pydantic>=2.10.0
+requests>=2.31.0
+pytest>=8.0.0
+pytest-django>=4.9.0
+gunicorn>=22.0.0
+

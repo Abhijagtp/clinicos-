@@ -1,0 +1,69 @@
+# Git & Version Control
+.git/
+.gitignore
+
+# Environment files and credentials (do not bake secrets into images!)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+client_secret*.json
+credentials*.json
+service-account*.json
+token.json
+
+# Bytecode & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+tests/
+
+# Local databases and logs
+*.log
+db.sqlite3
+db.sqlite3-journal
+db.sqlite3-shm
+db.sqlite3-wal
+
+# Media & Staticfiles
+media/
+staticfiles/
+
+# IDE & OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker artifacts
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Documentation & Scratch
+scratch_*.py
+check_*.py
+scratch/

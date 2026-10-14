@@ -1,0 +1,80 @@
+# Byte-compiled / optimized / C extensions
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+env/
+venv/
+ENV/
+.venv/
+.env/
+
+# Django local files & storage
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+db.sqlite3-shm
+db.sqlite3-wal
+media/
+staticfiles/
+
+# Environment and Secrets (Never commit secrets to git!)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+client_secret*.json
+credentials*.json
+service-account*.json
+token.json
+
+# Temporary scripts & scratch files
+scratch_*.py
+check_*.py
+scratch/
+
+# Pytest / Coverage / Tool caches
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs & OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Docker / Tunnel local overrides
+.docker/
+docker-compose.override.yml
