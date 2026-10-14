@@ -10,6 +10,7 @@ from apps.appointments.views import (
     AppointmentRescheduleView,
     AppointmentCancelView,
 )
+from apps.clinics.views import DashboardStatsView
 
 
 def health_check(request):
@@ -38,4 +39,7 @@ urlpatterns = [
     path("api/v1/appointments/availability/", AvailabilityView.as_view(), name="appointments-availability"),
     path("api/v1/appointments/<uuid:id>/reschedule/", AppointmentRescheduleView.as_view(), name="appointment-reschedule"),
     path("api/v1/appointments/<uuid:id>/cancel/", AppointmentCancelView.as_view(), name="appointment-cancel"),
+
+    # Clinic Staff & Admin Dashboard API
+    path("api/v1/dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
 ]
