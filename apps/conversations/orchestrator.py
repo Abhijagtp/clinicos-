@@ -10,6 +10,14 @@ from apps.appointments.models import Appointment
 from apps.conversations.models import Conversation, ConversationState, MessageLog, MessageDirection, ProcessingStatus
 from apps.ai_assistant.service import get_ai_assistant, AIAssistantInterface
 from apps.integrations.google_calendar.service import parse_relative_date
+from apps.conversations.security import (
+    is_prompt_injection,
+    is_inappropriate_content,
+    is_medical_prescription_inquiry,
+    validate_patient_name,
+    validate_patient_email,
+    check_rate_limit,
+)
 from services.booking_service import BookingService, BookingConflictError
 
 logger = logging.getLogger(__name__)
@@ -40,6 +48,11 @@ class ConversationOrchestrator:
         Main entry point for incoming WhatsApp text messages.
         Returns the outbound response text to send back to the patient.
         """
+        # 0. Anti-spam & Rate-Limiting Protection
+        if not check_rate_limit(sender_id):
+            logger.warning(f"Sender {sender_id} exceeded message rate limit.")
+            return "⚠️ You are sending messages too quickly. Please wait a moment before sending another request."
+
         # 1. Resolve or create Conversation record
         conversation, _ = Conversation.objects.get_or_create(
             clinic=clinic,
@@ -98,6 +111,35 @@ class ConversationOrchestrator:
         clinic = conv.clinic
         context = conv.context or {}
         context["current_state"] = conv.current_state
+
+        # Security Guardrail 1: Prompt Injection & Jailbreak Defense
+        if is_prompt_injection(message_text):
+            logger.warning(f"Prompt injection pattern detected from sender {conv.whatsapp_sender_id}: {message_text[:100]}")
+            return (
+                "I am the Clinic OS dental booking assistant. I cannot execute system override commands or disclose internal instructions. "
+                "How may I assist you with your dental care today?"
+            )
+
+        # Security Guardrail 2: Inappropriate / Abusive Content Defense
+        if is_inappropriate_content(message_text):
+            logger.warning(f"Inappropriate language detected from sender {conv.whatsapp_sender_id}")
+            return (
+                "Our clinic assistant does not engage with abusive or inappropriate language. "
+                "Please keep your messages respectful, or contact our clinic front desk directly during working hours."
+            )
+
+        # Security Guardrail 3: Medical Prescription & Diagnosis Disclaimer
+        if is_medical_prescription_inquiry(message_text):
+            context["pending_buttons"] = [
+                {"id": "book_appt", "title": "Book Consultation"},
+                {"id": "check_avail", "title": "Available Times"},
+            ]
+            conv.context = context
+            conv.save(update_fields=["context"])
+            return (
+                "For patient safety, our virtual assistant cannot prescribe medications or provide medical diagnoses.\n\n"
+                "If you are experiencing dental pain or discomfort, we strongly recommend booking an in-person dental consultation with our dentist, or visiting an emergency clinic."
+            )
 
         # AI Intent Extraction
         ai_result = self.ai.extract_booking_intent(message_text, context)
@@ -325,13 +367,18 @@ class ConversationOrchestrator:
             # Sub-step A: Awaiting Name
             if sub_step == "awaiting_name" and not is_affirmative(message_text):
                 name_input = message_text.strip()
-                cleaned_name = re.sub(r"^(?:my name is|i am|name:?|this is)\s*", "", name_input, flags=re.IGNORECASE).strip().title()
 
                 # Check if email was also typed (e.g. "Arun Kumar, arun@gmail.com")
                 email_match = re.search(r"\b([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\b", name_input)
                 if email_match:
-                    context["patient_email"] = email_match.group(1).lower()
-                    cleaned_name = re.sub(re.escape(email_match.group(1)), "", cleaned_name).strip(", ")
+                    e_ok, clean_em = validate_patient_email(email_match.group(1))
+                    if e_ok:
+                        context["patient_email"] = clean_em
+                    name_input = re.sub(re.escape(email_match.group(1)), "", name_input).strip(", ")
+
+                is_valid_name, cleaned_name = validate_patient_name(name_input)
+                if not is_valid_name or not cleaned_name:
+                    return "Please provide a valid full name using letters only (for example: *John Doe*)."
 
                 context["patient_name"] = cleaned_name
                 if context.get("patient_email"):
@@ -365,14 +412,14 @@ class ConversationOrchestrator:
             # Sub-step B: Awaiting Email
             if sub_step == "awaiting_email" and not is_affirmative(message_text):
                 email_match = re.search(r"\b([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\b", message_text)
-                if email_match:
-                    context["patient_email"] = email_match.group(1).lower()
-                elif "@" in message_text:
-                    context["patient_email"] = message_text.strip().lower()
+                cand_email = email_match.group(1) if email_match else message_text.strip()
+                is_valid_em, cleaned_em = validate_patient_email(cand_email)
+                if not is_valid_em or not cleaned_em:
+                    return "Please provide a valid email address (for example: *name@example.com*) so we can send your Google Calendar invite."
 
+                context["patient_email"] = cleaned_em
                 context.pop("sub_step", None)
                 p_name = context.get("patient_name", "Valued Patient")
-                p_email = context.get("patient_email", "N/A")
                 context["pending_buttons"] = [
                     {"id": "confirm_yes", "title": "Confirm Booking"},
                     {"id": "confirm_no", "title": "Cancel"},
@@ -382,7 +429,7 @@ class ConversationOrchestrator:
                 return (
                     f"Please review your appointment details:\n\n"
                     f"👤 *Patient:* {p_name}\n"
-                    f"📧 *Email:* {p_email}\n"
+                    f"📧 *Email:* {cleaned_em}\n"
                     f"📱 *Phone:* {conv.whatsapp_sender_id}\n"
                     f"📅 *Date & Time:* {display_time}\n"
                     f"🏥 *Clinic:* {clinic.name}\n\n"
@@ -604,6 +651,23 @@ class ConversationOrchestrator:
         clinic = conv.clinic
         context = conv.context or {}
 
+        # Anti-Abuse Guardrail: Prevent multiple active appointments per patient
+        active_appt = self._get_active_appointment(clinic, conv.whatsapp_sender_id)
+        if active_appt:
+            tz = ZoneInfo(clinic.timezone or "Asia/Kolkata")
+            curr_time_str = active_appt.starts_at.astimezone(tz).strftime("%I:%M %p on %A, %B %d")
+            context["pending_buttons"] = [
+                {"id": "reschedule_appt", "title": "Reschedule"},
+                {"id": "cancel_appt", "title": "Cancel"},
+            ]
+            conv.context = context
+            conv.save(update_fields=["context"])
+            return (
+                f"You already have an upcoming appointment scheduled for *{curr_time_str}*! 🦷\n\n"
+                f"To ensure fair scheduling for all patients, we limit to 1 active appointment at a time.\n\n"
+                f"Would you like to *Reschedule* or *Cancel* your existing appointment?"
+            )
+
         # Merge extracted preferences into context
         clean_m = (message_text or "").lower().strip()
         if "pref_today" in clean_m or clean_m == "today":
@@ -649,6 +713,29 @@ class ConversationOrchestrator:
             conv.context = context
             conv.save(update_fields=["current_state", "context"])
             return "Could you please specify a valid date (for example: *Today*, *Tomorrow*, or *YYYY-MM-DD*)?"
+
+        # Date Range Sanity Checks: No past dates, max 60-day horizon
+        tz = ZoneInfo(clinic.timezone or "Asia/Kolkata")
+        today = datetime.now(tz).date()
+        if target_date < today:
+            conv.current_state = ConversationState.COLLECTING_DETAILS
+            context["pending_buttons"] = [
+                {"id": "pref_today", "title": "Today"},
+                {"id": "pref_tomorrow", "title": "Tomorrow"},
+            ]
+            conv.context = context
+            conv.save(update_fields=["current_state", "context"])
+            return "We cannot schedule appointments for past dates. Would you like to check *Today* or *Tomorrow*?"
+
+        if target_date > today + timedelta(days=60):
+            conv.current_state = ConversationState.COLLECTING_DETAILS
+            context["pending_buttons"] = [
+                {"id": "pref_today", "title": "Today"},
+                {"id": "pref_tomorrow", "title": "Tomorrow"},
+            ]
+            conv.context = context
+            conv.save(update_fields=["current_state", "context"])
+            return "Appointments can only be scheduled up to 60 days in advance. Please choose an upcoming date within the next 2 months."
 
         # 2. Directly retrieve real available slots from Calendar & DB
         slots = self.booking_service.get_available_slots(clinic, target_date)
