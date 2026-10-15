@@ -1,6 +1,8 @@
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -59,11 +61,26 @@ class AppointmentListCreateView(APIView):
 
         date_param = request.query_params.get("date")
         if date_param:
-            try:
-                target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
-                queryset = queryset.filter(starts_at__date=target_date)
-            except ValueError:
-                pass
+            clinic = Clinic.objects.filter(id__in=allowed_clinic_ids).first()
+            tz = ZoneInfo(clinic.timezone) if clinic and clinic.timezone else ZoneInfo("Asia/Kolkata")
+            today_local = datetime.now(tz).date()
+
+            if date_param.lower() == "today":
+                queryset = queryset.filter(starts_at__date=today_local)
+            elif date_param.lower() == "tomorrow":
+                tomorrow_local = today_local + timedelta(days=1)
+                queryset = queryset.filter(starts_at__date=tomorrow_local)
+            elif date_param.lower() in ["today_tomorrow", "two_days"]:
+                tomorrow_local = today_local + timedelta(days=1)
+                queryset = queryset.filter(starts_at__date__in=[today_local, tomorrow_local])
+            elif date_param.lower() == "upcoming":
+                queryset = queryset.filter(starts_at__gte=timezone.now())
+            else:
+                try:
+                    target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
+                    queryset = queryset.filter(starts_at__date=target_date)
+                except ValueError:
+                    pass
 
         queryset = queryset.select_related("patient", "clinic").order_by("starts_at")
         serializer = AppointmentSerializer(queryset, many=True)
@@ -204,3 +221,50 @@ class AppointmentCancelView(APIView):
             reason=serializer.validated_data.get("reason", "Cancelled by clinic staff"),
         )
         return Response(AppointmentSerializer(cancelled).data)
+
+
+class AppointmentStatusUpdateView(APIView):
+    """
+    POST /api/v1/appointments/<uuid:id>/status/
+    POST /api/v1/appointments/<uuid:id>/check-in/
+    Allows receptionists, doctors, and staff to mark patients as checked in,
+    in consultation, completed, or no-show.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, id, *args, **kwargs):
+        appointment = get_object_or_404(Appointment, id=id)
+        allowed_clinic_ids = [str(cid) for cid in get_authorized_clinic_ids(request.user)]
+        if str(appointment.clinic_id) not in allowed_clinic_ids and not request.user.is_superuser:
+            raise PermissionDenied("You do not have permission to update appointments for this clinic.")
+
+        new_status = request.data.get("status")
+        if not new_status:
+            if "check-in" in request.path:
+                new_status = Appointment.Status.CHECKED_IN
+            else:
+                return Response({"error": "status field is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_statuses = [c[0] for c in Appointment.Status.choices]
+        if new_status not in valid_statuses:
+            return Response(
+                {"error": f"Invalid status '{new_status}'. Choices: {valid_statuses}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_status = appointment.status
+        appointment.status = new_status
+        if request.data.get("internal_notes"):
+            appointment.internal_notes = request.data["internal_notes"]
+        appointment.save(update_fields=["status", "internal_notes", "updated_at"])
+
+        logger.info(
+            "Appointment %s status updated: %s -> %s by user=%s (%s)",
+            appointment.id,
+            old_status,
+            new_status,
+            request.user.id,
+            request.user.email,
+        )
+
+        return Response(AppointmentSerializer(appointment).data, status=status.HTTP_200_OK)

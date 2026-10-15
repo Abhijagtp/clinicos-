@@ -3,6 +3,8 @@ from datetime import timedelta
 from django.utils import timezone
 from django.urls import reverse
 from apps.appointments.models import Appointment
+from apps.accounts.models import User
+from apps.clinics.models import ClinicMembership
 
 
 @pytest.mark.django_db
@@ -107,3 +109,102 @@ class TestAppointmentAPIs:
         assert response.status_code == 200
         appt.refresh_from_db()
         assert appt.status == Appointment.Status.CANCELLED
+
+    def test_receptionist_can_check_in_appointment(self, api_client, clinic, patient):
+        receptionist = User.objects.create_user(
+            email="reception@dentalcare.com",
+            password="password123",
+            first_name="Anita",
+        )
+        ClinicMembership.objects.create(
+            clinic=clinic,
+            user=receptionist,
+            role=ClinicMembership.Role.RECEPTIONIST,
+            is_active=True,
+        )
+
+        start_at = timezone.now() + timedelta(hours=1)
+        end_at = start_at + timedelta(minutes=30)
+        appt = Appointment.objects.create(
+            clinic=clinic,
+            patient=patient,
+            starts_at=start_at,
+            ends_at=end_at,
+            status=Appointment.Status.CONFIRMED,
+        )
+
+        api_client.force_authenticate(user=receptionist)
+        url = reverse("appointment-check-in", kwargs={"id": appt.id})
+
+        response = api_client.post(url)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "checked_in"
+        assert data["time_formatted"] is not None
+        assert data["time_range"] is not None
+
+        appt.refresh_from_db()
+        assert appt.status == Appointment.Status.CHECKED_IN
+
+    def test_appointment_status_update_cycle(self, api_client, clinic, staff_user, patient):
+        appt = Appointment.objects.create(
+            clinic=clinic,
+            patient=patient,
+            starts_at=timezone.now() + timedelta(hours=2),
+            ends_at=timezone.now() + timedelta(hours=2, minutes=30),
+            status=Appointment.Status.CONFIRMED,
+        )
+
+        api_client.force_authenticate(user=staff_user)
+        url = reverse("appointment-status-update", kwargs={"id": appt.id})
+
+        # Transition to in_consultation
+        res = api_client.post(url, {"status": "in_consultation"}, format="json")
+        assert res.status_code == 200
+        assert res.json()["status"] == "in_consultation"
+
+        # Transition to completed
+        res_comp = api_client.post(url, {"status": "completed"}, format="json")
+        assert res_comp.status_code == 200
+        assert res_comp.json()["status"] == "completed"
+
+    def test_appointment_list_filter_today_and_tomorrow(self, api_client, clinic, staff_user, patient):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        tz = ZoneInfo(clinic.timezone)
+        today_local = datetime.now(tz).date()
+
+        # Appointment today
+        appt_today = Appointment.objects.create(
+            clinic=clinic,
+            patient=patient,
+            starts_at=timezone.now(),
+            ends_at=timezone.now() + timedelta(minutes=30),
+            status=Appointment.Status.CONFIRMED,
+        )
+        # Appointment tomorrow
+        appt_tomorrow = Appointment.objects.create(
+            clinic=clinic,
+            patient=patient,
+            starts_at=timezone.now() + timedelta(days=1),
+            ends_at=timezone.now() + timedelta(days=1, minutes=30),
+            status=Appointment.Status.CONFIRMED,
+        )
+
+        api_client.force_authenticate(user=staff_user)
+        url = reverse("appointments-list-create")
+
+        # Query today
+        res_today = api_client.get(url, {"date": "today"})
+        assert res_today.status_code == 200
+        today_ids = [a["id"] for a in res_today.json()]
+        assert str(appt_today.id) in today_ids
+        assert str(appt_tomorrow.id) not in today_ids
+
+        # Query tomorrow
+        res_tomorrow = api_client.get(url, {"date": "tomorrow"})
+        assert res_tomorrow.status_code == 200
+        tomorrow_ids = [a["id"] for a in res_tomorrow.json()]
+        assert str(appt_tomorrow.id) in tomorrow_ids
+        assert str(appt_today.id) not in tomorrow_ids
+

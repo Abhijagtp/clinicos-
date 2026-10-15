@@ -12,6 +12,7 @@ from apps.clinics.models import Clinic, ClinicMembership
 from apps.appointments.models import Appointment
 from apps.patients.models import Patient
 from apps.conversations.models import Conversation, ConversationState
+from apps.clinics.serializers import ClinicSettingsSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -154,3 +155,63 @@ class DashboardStatsView(APIView):
         }
 
         return Response(data, status=status.HTTP_200_OK)
+
+
+class ClinicSettingsView(APIView):
+    """
+    GET /api/v1/clinic/settings/
+    PATCH /api/v1/clinic/settings/
+    View and configure clinic operational parameters, appointment slot durations,
+    slot buffer minutes, minimum notice hours, and weekly operating hours.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def _get_clinic_and_membership(self, user):
+        membership = ClinicMembership.objects.filter(user=user, is_active=True).select_related("clinic").first()
+        if membership:
+            return membership.clinic, membership
+        clinic = Clinic.objects.filter(status=Clinic.Status.ACTIVE).first()
+        return clinic, None
+
+    def get(self, request, *args, **kwargs):
+        clinic, membership = self._get_clinic_and_membership(request.user)
+        if not clinic:
+            return Response({"error": "No active clinic found."}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ClinicSettingsSerializer(clinic)
+        role = membership.role if membership else ("owner" if request.user.is_superuser else "staff")
+        can_edit = bool(request.user.is_superuser or (membership and membership.role in [ClinicMembership.Role.OWNER, ClinicMembership.Role.DOCTOR]))
+
+        response_data = serializer.data
+        response_data["user_role"] = role
+        response_data["can_edit_settings"] = can_edit
+        return Response(response_data, status=status.HTTP_200_OK)
+
+    def patch(self, request, *args, **kwargs):
+        clinic, membership = self._get_clinic_and_membership(request.user)
+        if not clinic:
+            return Response({"error": "No active clinic found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Enforce role-based access: only owners or doctors (or superusers) can modify clinic settings
+        can_edit = bool(request.user.is_superuser or (membership and membership.role in [ClinicMembership.Role.OWNER, ClinicMembership.Role.DOCTOR]))
+        if not can_edit:
+            return Response(
+                {"detail": "Only clinic owners or doctors have permission to modify clinic operating rules and schedules."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = ClinicSettingsSerializer(clinic, data=request.data, partial=True)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        updated_clinic = serializer.save()
+        logger.info(
+            "Clinic settings updated for clinic=%s by user=%s",
+            updated_clinic.id,
+            request.user.id,
+        )
+
+        response_data = serializer.data
+        response_data["user_role"] = membership.role if membership else "owner"
+        response_data["can_edit_settings"] = True
+        return Response(response_data, status=status.HTTP_200_OK)

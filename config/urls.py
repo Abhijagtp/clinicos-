@@ -9,8 +9,9 @@ from apps.appointments.views import (
     AvailabilityView,
     AppointmentRescheduleView,
     AppointmentCancelView,
+    AppointmentStatusUpdateView,
 )
-from apps.clinics.views import DashboardStatsView
+from apps.clinics.views import DashboardStatsView, ClinicSettingsView
 
 
 def health_check(request):
@@ -39,7 +40,16 @@ urlpatterns = [
     path("api/v1/appointments/availability/", AvailabilityView.as_view(), name="appointments-availability"),
     path("api/v1/appointments/<uuid:id>/reschedule/", AppointmentRescheduleView.as_view(), name="appointment-reschedule"),
     path("api/v1/appointments/<uuid:id>/cancel/", AppointmentCancelView.as_view(), name="appointment-cancel"),
+    path("api/v1/appointments/<uuid:id>/status/", AppointmentStatusUpdateView.as_view(), name="appointment-status-update"),
+    path("api/v1/appointments/<uuid:id>/check-in/", AppointmentStatusUpdateView.as_view(), name="appointment-check-in"),
 
     # Clinic Staff & Admin Dashboard API
     path("api/v1/dashboard/stats/", DashboardStatsView.as_view(), name="dashboard-stats"),
+    path("api/v1/clinic/settings/", ClinicSettingsView.as_view(), name="clinic-settings"),
+
+    # Patients Management API
+    path("api/v1/patients/", include("apps.patients.urls")),
+
+    # Clinical Consultations & SOAP Notes API
+    path("api/v1/consultations/", include("apps.consultations.urls")),
 ]
